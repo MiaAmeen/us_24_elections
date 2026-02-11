@@ -301,7 +301,7 @@ def sample_posts_for_cluster(
 # Example usage
 # ----------------------------
 if __name__ == "__main__":
-    PARQUET_PATH = "/Users/destroyerofworlds/Desktop/Research/Twitter2024/TS24_clean.parquet"
+    PARQUET_PATH = "./TS24_clean.parquet"
     MONTH = "05"
     OUT_ELBOW_PNG = "./elbow.png"
     OUT_CLUSTER_CSV = "./clusters_ids.csv"
