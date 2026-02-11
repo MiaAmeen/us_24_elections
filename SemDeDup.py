@@ -2,31 +2,26 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Iterable, List, Dict, Tuple, Optional
-
+from typing import List, Dict, Tuple, Optional
 import numpy as np
 import pandas as pd
-
 from sentence_transformers import SentenceTransformer
 import torch
-
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.feature_extraction.text import CountVectorizer
-
 import matplotlib.pyplot as plt
-
+from ollama import embed
 from dotenv import load_dotenv
 load_dotenv()
 
 from huggingface_hub import login
-HF_TOKEN = os.getenv("HF_HUB")
-login(HF_TOKEN)
 
 CREATED_AT = "created_at"
 ID = "external_id"
 TEXT = "clean_content"
 
-EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
+HF_TOKEN = os.getenv("HF_HUB")
+EMBEDDING_MODEL = "qwen3-embedding:0.6b"
 EMBEDDING_PROMPT = (
         "Instruct: Compute a representation for this sentence that captures its semantic meaning for the purpose of clustering.\n"
         "Sentence:"
@@ -34,34 +29,38 @@ EMBEDDING_PROMPT = (
 DEVICE = "cuda" if torch.cuda.is_available() \
         else "mps" if torch.backends.mps.is_available() \
         else "cpu"
+print(f"Using device: {DEVICE}")
 
 # ----------------------------
 # 1) Load + filter a parquet by month
 # ----------------------------
-def load_month_from_parquet(
-    parquet_path: str | Path,
-    month: str # "MM"
-) -> pd.DataFrame:
+DF = pd.DataFrame()
+def load_parquet(parquet_path: str):
+        global DF
+        DF = pd.read_parquet(parquet_path, columns=[ID, TEXT, CREATED_AT])
+        DF[TEXT] = DF[TEXT].astype(str)
+        DF = DF[DF[TEXT].str.strip() != ""]
+        DF[ID] = DF[ID].astype(str)
 
-    parquet_path = Path(parquet_path)
+        print(f"Loaded {len(DF)} rows from {parquet_path}")
+
+def load_month_from_parquet(
+        month: str,
+        parquet: pd.DataFrame = DF,
+) -> pd.DataFrame:
+    global DF
+    parquet = DF if parquet.empty else parquet
 
     # Parse month boundaries
     start = pd.Timestamp(f"2024-{month}-01T00:00:00Z")
     end  = pd.Timestamp(f"2024-{int(month) + 1:02d}-01T00:00:00Z")
-    df = pd.read_parquet(parquet_path)
 
     # Parse timestamps
-    created_at_ts = pd.to_datetime(df[CREATED_AT], errors="coerce", utc=True)
+    created_at_ts = pd.to_datetime(parquet[CREATED_AT], errors="coerce", utc=True)
     mask = created_at_ts.notna() & (created_at_ts >= start) & (created_at_ts < end)
 
     # Filter/clean the data, select columns
-    out = df.loc[mask, [ID, TEXT, CREATED_AT]]
-    out[TEXT] = out[TEXT].astype(str)
-    out = out[out[TEXT].str.strip() != ""]
-    out[ID] = out[ID].astype(str)
-
-    print(f"Loaded {len(out)} rows for month {month} from {parquet_path.name}")
-    return out
+    return parquet.loc[mask, [ID, TEXT, CREATED_AT]]
 
 
 # ----------------------------
@@ -92,6 +91,8 @@ def embed_texts(
     """
     Returns embeddings as float32 numpy array of shape (n, d).
     """
+    login(HF_TOKEN)
+
     embs = model.encode(
         texts,
         prompt=prompt,
@@ -103,6 +104,18 @@ def embed_texts(
     # sentence-transformers may return np.ndarray already; ensure float32 for sklearn speed
     embs = np.asarray(embs, dtype=np.float32)
     return embs
+
+
+def embed_texts_ollama(
+    texts: List[str],
+    batch_size: int = 512,
+) -> np.ndarray:
+    all_vecs = []
+    for i in range(0, len(texts), batch_size):
+        chunk = texts[i:i+batch_size]
+        resp = embed(model=EMBEDDING_MODEL, input=chunk)
+        all_vecs.append(np.asarray(resp["embeddings"], dtype=np.float32))
+    return np.vstack(all_vecs)
 
 
 # ----------------------------
@@ -217,7 +230,7 @@ def top_words_by_cluster(
     df_month: pd.DataFrame,
     labels: np.ndarray,
     k: int,
-    text_col: str = "clean_content",
+    text_col: str = TEXT,
     top_n: int = 30,
     min_df: int = 3,
     max_df: float = 0.9,
@@ -291,7 +304,7 @@ def sample_posts_for_cluster(
     df_month: pd.DataFrame,
     labels: np.ndarray,
     cluster_id: int,
-    text_col: str = "clean_content",
+    text_col: str = TEXT,
     n: int = 10,
     seed: int = 42,
 ) -> List[str]:
@@ -306,18 +319,15 @@ def sample_posts_for_cluster(
 # Example usage
 # ----------------------------
 if __name__ == "__main__":
-    PARQUET_PATH = "./TS24_clean.parquet"
-    MONTH = "05"
-    OUT_ELBOW_PNG = "./elbow.png"
-    OUT_CLUSTER_CSV = "./clusters_ids.csv"
+    PARQUET_PATH = "./TS24_cleaned.parquet"
+    load_parquet(PARQUET_PATH)
 
-    # Load da data
-    df_month = load_month_from_parquet(PARQUET_PATH, MONTH)
+    for month in ["05", "06", "07", "08", "09", "10", "11"]:
+        print(f"Processing month {month}...")
+        df_month = load_month_from_parquet(month)
+        embeddings = embed_texts_ollama(df_month[TEXT].tolist())
+        plot_elbow(embeddings, k_max=30, save_path=f"./elbow_{month}.png")
 
-    # Do da embeddings
-    model = build_embedding_model()
-    embeddings = embed_texts(model, df_month["clean_content"].tolist())
-    plot_elbow(embeddings, k_max=30, save_path=OUT_ELBOW_PNG)
 
 #     # Once you pick k...
 #     k = 12
