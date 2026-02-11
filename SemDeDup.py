@@ -30,7 +30,10 @@ EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 EMBEDDING_PROMPT = (
         "Instruct: Compute a representation for this sentence that captures its semantic meaning for the purpose of clustering.\n"
         "Sentence:"
-    )
+)
+DEVICE = "cuda" if torch.cuda.is_available() \
+        else "mps" if torch.backends.mps.is_available() \
+        else "cpu"
 
 # ----------------------------
 # 1) Load + filter a parquet by month
@@ -72,7 +75,8 @@ def build_embedding_model(
         model_name,
         # trust_remote_code=True,
         # model_kwargs={"torch_dtype": torch.bfloat16},
-        token=HF_TOKEN
+        token=HF_TOKEN,
+        device=DEVICE
     )
     model.max_seq_length = max_seq_length
     return model
@@ -94,6 +98,7 @@ def embed_texts(
         normalize_embeddings=normalize,
         batch_size=batch_size,
         show_progress_bar=True,
+        convert_to_numpy=True
     )
     # sentence-transformers may return np.ndarray already; ensure float32 for sklearn speed
     embs = np.asarray(embs, dtype=np.float32)
