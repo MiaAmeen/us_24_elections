@@ -21,8 +21,8 @@ ID = "external_id"
 TEXT = "clean_content"
 
 HF_TOKEN = os.getenv("HF_HUB")
-EMBEDDING_MODEL = "qwen3-embedding:0.6b"
-EMBEDDING_DIMENSIONS = 256
+EMBEDDING_MODEL = "qwen3-embedding:8b"
+EMBEDDING_DIMENSIONS = 128
 EMBEDDING_PROMPT = (
         "Instruct: Compute a representation for this sentence that captures its semantic meaning for the purpose of clustering.\n"
         "Sentence:"
@@ -192,7 +192,7 @@ def plot_elbow(
         save_path.parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(save_path, bbox_inches="tight", dpi=150)
 
-    plt.show()
+    plt.close()
 
 
 # ----------------------------
@@ -356,7 +356,7 @@ if __name__ == "__main__":
         df_month = load_month_from_parquet(month)
 
         # TESTING !
-        # df_month = df_month.sample(n=2048, random_state=42).reset_index(drop=True)
+        df_month = df_month.sample(n=2048, random_state=42).reset_index(drop=True)
 
         embeddings = embed_texts_ollama(df_month[TEXT].tolist())
         plot_elbow(embeddings, k_max=30, save_path=f"./elbow_{month}.png")
