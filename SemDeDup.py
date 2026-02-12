@@ -22,6 +22,7 @@ TEXT = "clean_content"
 
 HF_TOKEN = os.getenv("HF_HUB")
 EMBEDDING_MODEL = "qwen3-embedding:0.6b"
+EMBEDDING_DIMENSIONS = 256
 EMBEDDING_PROMPT = (
         "Instruct: Compute a representation for this sentence that captures its semantic meaning for the purpose of clustering.\n"
         "Sentence:"
@@ -36,17 +37,17 @@ print(f"Using device: {DEVICE}")
 # ----------------------------
 DF = pd.DataFrame()
 def load_parquet(parquet_path: str):
-        global DF
-        DF = pd.read_parquet(parquet_path, columns=[ID, TEXT, CREATED_AT])
-        DF[TEXT] = DF[TEXT].astype(str)
-        DF = DF[DF[TEXT].str.strip() != ""]
-        DF[ID] = DF[ID].astype(str)
+    global DF
+    DF = pd.read_parquet(parquet_path, columns=[ID, TEXT, CREATED_AT])
+    DF[TEXT] = DF[TEXT].astype(str)
+    DF = DF[DF[TEXT].str.strip() != ""]
+    DF[ID] = DF[ID].astype(str)
 
-        print(f"Loaded {len(DF)} rows from {parquet_path}")
+    print(f"Loaded {len(DF)} rows from {parquet_path}")
 
 def load_month_from_parquet(
-        month: str,
-        parquet: pd.DataFrame = DF,
+    month: str,
+    parquet: pd.DataFrame = DF,
 ) -> pd.DataFrame:
     global DF
     parquet = DF if parquet.empty else parquet
@@ -60,7 +61,7 @@ def load_month_from_parquet(
     mask = created_at_ts.notna() & (created_at_ts >= start) & (created_at_ts < end)
 
     # Filter/clean the data, select columns
-    return parquet.loc[mask, [ID, TEXT, CREATED_AT]]
+    return parquet.loc[mask, :]
 
 
 # ----------------------------
@@ -109,14 +110,32 @@ def embed_texts(
 def embed_texts_ollama(
     texts: List[str],
     batch_size: int = 512,
+    dimensions: int = EMBEDDING_DIMENSIONS
 ) -> np.ndarray:
-    all_vecs = []
-    for i in range(0, len(texts), batch_size):
-        chunk = texts[i:i+batch_size]
-        resp = embed(model=EMBEDDING_MODEL, input=chunk)
-        all_vecs.append(np.asarray(resp["embeddings"], dtype=np.float32))
-    return np.vstack(all_vecs)
+    import time
 
+    all_vecs = []
+    n = len(texts)
+    print(f"Rows to process: {n}")
+    batch_times = []
+    start_total = time.perf_counter()
+
+    for i in range(0, n, batch_size):
+        chunk = texts[i:i+batch_size]
+
+        t0 = time.perf_counter()
+        resp = embed(model=EMBEDDING_MODEL, input=chunk, dimensions=dimensions)
+        batch_times.append((time.perf_counter() - t0))
+
+        all_vecs.append(np.asarray(resp["embeddings"], dtype=np.float32))
+        avg_ms = sum(batch_times) / len(batch_times)
+
+        print(f"\rRows processed: {i + batch_size:,}/{n:,} | Avg time: {avg_ms:.3f} s", end="", flush=True,)
+
+    total_ms = (time.perf_counter() - start_total)
+    print(f"\nDone in {total_ms/1000:.2f}s")
+
+    return np.vstack(all_vecs)
 
 # ----------------------------
 # 3) Elbow method (plot inertia vs k)
@@ -127,16 +146,21 @@ def plot_elbow(
     random_state: int = 42,
     batch_size: int = 2048,
     max_iter: int = 200,
-    n_init: int = 10,
+    n_init: int = 20,
     save_path: Optional[str | Path] = None,
-) -> List[Tuple[int, float]]:
+):
     """
     Fits MiniBatchKMeans for k in [k_min, k_max], collects inertia, plots elbow.
 
     Returns list of (k, inertia).
     """
+    from sklearn.metrics import silhouette_score
+
     ks = list(range(2, k_max + 1))
     inertias: List[float] = []
+    rng = np.random.default_rng(random_state)
+    mask = rng.choice(embeddings.shape[0], 5000, replace=False)
+    silhouettes = []
 
     for k in ks:
         km = MiniBatchKMeans(
@@ -146,16 +170,22 @@ def plot_elbow(
             max_iter=max_iter,
             n_init=n_init,
         )
-        km.fit(embeddings)
+        labels = km.fit_predict(embeddings)
         inertias.append(float(km.inertia_))
+        silhouettes.append(silhouette_score(embeddings[mask], labels[mask]))
+        # silhouettes.append(silhouette_score(embeddings, labels))
 
     # Plot
-    plt.figure()
-    plt.plot(ks, inertias, marker="o")
-    plt.xlabel("k (number of clusters)")
-    plt.ylabel("Inertia (within-cluster SSE)")
-    plt.title("Elbow Method (MiniBatchKMeans)")
-    plt.xticks(ks)
+    _, ax1 = plt.subplots()
+    ax1.plot(ks, inertias, marker="o", color="tab:blue")
+    ax1.set_xlabel("k")
+    ax1.set_ylabel("Inertia (full data)", color="tab:blue")
+
+    ax2 = ax1.twinx()
+    ax2.plot(ks, silhouettes, marker="o", color="tab:orange")
+    ax2.set_ylabel("Silhouette (sampled)", color="tab:orange")
+
+    plt.title("Inertia + Silhouette vs k")
 
     if save_path is not None:
         save_path = Path(save_path)
@@ -163,7 +193,6 @@ def plot_elbow(
         plt.savefig(save_path, bbox_inches="tight", dpi=150)
 
     plt.show()
-    return list(zip(ks, inertias))
 
 
 # ----------------------------
@@ -174,11 +203,10 @@ def cluster_and_export_ids_csv(
     embeddings: np.ndarray,
     k: int,
     out_csv_path: str | Path,
-    id_col: str = "external_id",
     random_state: int = 42,
     batch_size: int = 2048,
     max_iter: int = 200,
-    n_init: int = 10,
+    n_init: int = 20,
 ) -> Tuple[pd.DataFrame, np.ndarray]:
     """
     Runs MiniBatchKMeans with k clusters, assigns labels, writes a CSV where each
@@ -200,7 +228,7 @@ def cluster_and_export_ids_csv(
     labels = km.fit_predict(embeddings)
 
     # Collect ids per cluster
-    ids = df_month[id_col].astype(str).to_numpy()
+    ids = df_month[ID].astype(str).to_numpy()
     clusters: Dict[int, List[str]] = {i: [] for i in range(k)}
     for _id, lab in zip(ids, labels):
         clusters[int(lab)].append(_id)
@@ -322,9 +350,14 @@ if __name__ == "__main__":
     PARQUET_PATH = "./TS24_cleaned.parquet"
     load_parquet(PARQUET_PATH)
 
-    for month in ["05", "06", "07", "08", "09", "10", "11"]:
+    for month in ["06", "07", "08", "09", "10", "11"]:
+        print("-----------------------------")
         print(f"Processing month {month}...")
         df_month = load_month_from_parquet(month)
+
+        # TESTING !
+        # df_month = df_month.sample(n=2048, random_state=42).reset_index(drop=True)
+
         embeddings = embed_texts_ollama(df_month[TEXT].tolist())
         plot_elbow(embeddings, k_max=30, save_path=f"./elbow_{month}.png")
 
