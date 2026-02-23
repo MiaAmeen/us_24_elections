@@ -19,11 +19,14 @@ source .venv/bin/activate
 .env_copy --> .env
 ```
 ### Download the data:
-From these links: 
+Download the files from these links: 
 - [DATASET #1](https://drive.google.com/file/d/1iai2XHZAEot-7jr2bqPKwJc7akoVbvKs/view?usp=sharing)
 - [DATASET #2](https://drive.google.com/file/d/1txieLz4LLIqQwMq28ln166Z05saA3pPI/view?usp=sharing)
 
-Make sure to save them in the main folder.
+And make sure to store them in the us_24_elections/data/ folder:
+```
+mkdir data
+```
 
 ### Run it!
 ```
