@@ -2,8 +2,8 @@ from pathlib import Path
 
 
 # --------- FILE PATHS ----------
-TRUTH_SOCIAL_FILE = "./TS_parquets/TS24_cleaned.parquet"
-BLUESKY_FILE      = "./bsky_scrape/BS24.parquet"
+TRUTH_SOCIAL_FILE = "./data/TS24_cleaned.parquet"
+BLUESKY_FILE      = "./data/BS24.parquet"
 TWITTER_FOLDER = "./X_parquets_clean"  # contains multiple .parquet
 TWITTER_FILES = list(Path(TWITTER_FOLDER).glob("*.parquet"))
 
