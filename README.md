@@ -19,8 +19,11 @@ source .venv/bin/activate
 .env_copy --> .env
 ```
 ### Download the data:
-From this link: [GOOGLE DRIVE](https://drive.google.com/file/d/1G9RI9qITj3d4fyeJ8e5AXIgEgwjJIq9-/view?usp=sharing)
-Save it in the main folder.
+From these links: 
+- [DATASET #1](https://drive.google.com/file/d/1iai2XHZAEot-7jr2bqPKwJc7akoVbvKs/view?usp=sharing)
+- [DATASET #2](https://drive.google.com/file/d/1txieLz4LLIqQwMq28ln166Z05saA3pPI/view?usp=sharing)
+
+Make sure to save them in the main folder.
 
 ### Run it!
 ```
