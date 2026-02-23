@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import time
 from typing import List, Dict, Tuple, Optional
 import numpy as np
 import pandas as pd
@@ -15,10 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from huggingface_hub import login
-
-CREATED_AT = "created_at"
-ID = "external_id"
-TEXT = "clean_content"
+from globals import *
 
 HF_TOKEN = os.getenv("HF_HUB")
 EMBEDDING_MODEL = "qwen3-embedding:8b"
@@ -35,33 +33,22 @@ print(f"Using device: {DEVICE}")
 # ----------------------------
 # 1) Load + filter a parquet by month
 # ----------------------------
-DF = pd.DataFrame()
-def load_parquet(parquet_path: str):
-    global DF
-    DF = pd.read_parquet(parquet_path, columns=[ID, TEXT, CREATED_AT])
-    DF[TEXT] = DF[TEXT].astype(str)
-    DF = DF[DF[TEXT].str.strip() != ""]
-    DF[ID] = DF[ID].astype(str)
+def load_parquet(parquet_path: str, cols = [ID_COL, CLEAN_TEXT_COL, CREATED_AT_COL], month: Optional[str] = None) -> pd.DataFrame:
+    df = pd.read_parquet(parquet_path, columns=cols)
+    df[CLEAN_TEXT_COL] = df[CLEAN_TEXT_COL].astype(str)
+    df = df[df[CLEAN_TEXT_COL].str.strip() != ""]
+    df[ID_COL] = df[ID_COL].astype(str)
 
-    print(f"Loaded {len(DF)} rows from {parquet_path}")
+    if month is not None:
+        # Parse month boundaries
+        start = pd.Timestamp(f"2024-{month}-01T00:00:00Z")
+        end  = pd.Timestamp(f"2024-{int(month) + 1:02d}-01T00:00:00Z")
+        created_at_ts = pd.to_datetime(df[CREATED_AT_COL], errors="coerce", utc=True)
+        mask = created_at_ts.notna() & (created_at_ts >= start) & (created_at_ts < end)
+        df = df.loc[mask]
 
-def load_month_from_parquet(
-    month: str,
-    parquet: pd.DataFrame = DF,
-) -> pd.DataFrame:
-    global DF
-    parquet = DF if parquet.empty else parquet
-
-    # Parse month boundaries
-    start = pd.Timestamp(f"2024-{month}-01T00:00:00Z")
-    end  = pd.Timestamp(f"2024-{int(month) + 1:02d}-01T00:00:00Z")
-
-    # Parse timestamps
-    created_at_ts = pd.to_datetime(parquet[CREATED_AT], errors="coerce", utc=True)
-    mask = created_at_ts.notna() & (created_at_ts >= start) & (created_at_ts < end)
-
-    # Filter/clean the data, select columns
-    return parquet.loc[mask, :]
+    print(f"Loaded {len(df)} rows from {parquet_path}")
+    return df
 
 
 # ----------------------------
@@ -109,33 +96,44 @@ def embed_texts(
 
 def embed_texts_ollama(
     texts: List[str],
+    output_path: str,
     batch_size: int = 512,
-    dimensions: int = EMBEDDING_DIMENSIONS
-) -> np.ndarray:
-    import time
-
-    all_vecs = []
+    dimensions: int = EMBEDDING_DIMENSIONS,
+):
     n = len(texts)
     print(f"Rows to process: {n}")
-    batch_times = []
-    start_total = time.perf_counter()
 
-    for i in range(0, n, batch_size):
-        chunk = texts[i:i+batch_size]
+    # Memory-mapped array (writes directly to disk)
+    embeddings = np.memmap(output_path, dtype=np.float32, mode="w+", shape=(n, dimensions),)
+
+    start_total = time.perf_counter()
+    total_batch_time = 0.0
+    batch_count = 0
+
+    for start in range(0, n, batch_size):
+        end = min(start + batch_size, n)
+        chunk = texts[start:end]
 
         t0 = time.perf_counter()
-        resp = embed(model=EMBEDDING_MODEL, input=chunk, dimensions=dimensions)
-        batch_times.append((time.perf_counter() - t0))
+        embeddings[start:end] = embed(model=EMBEDDING_MODEL, input=chunk, dimensions=dimensions)["embeddings"]
+        batch_time = time.perf_counter() - t0
+        total_batch_time += batch_time
+        batch_count += 1
 
-        all_vecs.append(np.asarray(resp["embeddings"], dtype=np.float32))
-        avg_ms = sum(batch_times) / len(batch_times)
+        avg_time = total_batch_time / batch_count
+        print(
+            f"\rRows processed: {end:,}/{n:,} | Avg batch time: {avg_time:.3f}s",
+            end="",
+            flush=True,
+        )
 
-        print(f"\rRows processed: {i + batch_size:,}/{n:,} | Avg time: {avg_ms:.3f} s", end="", flush=True,)
+    embeddings.flush()
 
-    total_ms = (time.perf_counter() - start_total)
-    print(f"\nDone in {total_ms/1000:.2f}s")
+    total_time = time.perf_counter() - start_total
+    print(f"\nDone in {total_time:.2f}s")
 
-    return np.vstack(all_vecs)
+    return embeddings
+
 
 # ----------------------------
 # 3) Elbow method (plot inertia vs k)
@@ -198,7 +196,7 @@ def plot_elbow(
 # ----------------------------
 # 4) KMeans clustering + output CSV with one column per cluster of external_ids
 # ----------------------------
-def cluster_and_export_ids_csv(
+def kmeans_cluster(
     df_month: pd.DataFrame,
     embeddings: np.ndarray,
     k: int,
@@ -228,7 +226,7 @@ def cluster_and_export_ids_csv(
     labels = km.fit_predict(embeddings)
 
     # Collect ids per cluster
-    ids = df_month[ID].astype(str).to_numpy()
+    ids = df_month[ID_COL].astype(str).to_numpy()
     clusters: Dict[int, List[str]] = {i: [] for i in range(k)}
     for _id, lab in zip(ids, labels):
         clusters[int(lab)].append(_id)
@@ -251,6 +249,36 @@ def cluster_and_export_ids_csv(
     return out_df, labels
 
 
+def hdbscan_cluster(
+    df: pd.DataFrame,
+    embeddings: np.ndarray,
+    out_csv_path: str | Path,
+    min_cluster_size: int = 100,
+    min_samples: int = 5,
+    n_jobs: int = -1,
+):
+    import hdbscan
+
+    clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+        core_dist_n_jobs=n_jobs,
+    )
+    labels = clusterer.fit_predict(embeddings)
+
+    out_df = pd.DataFrame({
+        "source_TS": df["source_TS"].values,
+        "id": df[ID_COL].values,
+        "cluster": labels
+    })
+
+    out_csv_path = Path(out_csv_path)
+    out_csv_path.parent.mkdir(parents=True, exist_ok=True)
+    out_df.to_csv(out_csv_path, index=False, chunksize=1_000_000)
+
+    return out_df
+
+
 # ----------------------------
 # 5) Top words per cluster + LLM label prompt builder
 # ----------------------------
@@ -258,7 +286,7 @@ def top_words_by_cluster(
     df_month: pd.DataFrame,
     labels: np.ndarray,
     k: int,
-    text_col: str = TEXT,
+    text_col: str = CLEAN_TEXT_COL,
     top_n: int = 30,
     min_df: int = 3,
     max_df: float = 0.9,
@@ -347,19 +375,32 @@ def sample_posts_for_cluster(
 # Example usage
 # ----------------------------
 if __name__ == "__main__":
-    PARQUET_PATH = "./TS24_cleaned.parquet"
-    load_parquet(PARQUET_PATH)
+    ts = load_parquet(TRUTH_SOCIAL_FILE, month="05")
+    bs = load_parquet(BLUESKY_FILE, month="05")
 
-    for month in ["06", "07", "08", "09", "10", "11"]:
-        print("-----------------------------")
-        print(f"Processing month {month}...")
-        df_month = load_month_from_parquet(month)
+    ts.drop(columns=[CREATED_AT_COL], inplace=True)
+    bs.drop(columns=[CREATED_AT_COL], inplace=True)
 
-        # TESTING !
-        df_month = df_month.sample(n=2048, random_state=42).reset_index(drop=True)
+    ts["source_TS"] = 1
+    bs["source_TS"] = 0
 
-        embeddings = embed_texts_ollama(df_month[TEXT].tolist())
-        plot_elbow(embeddings, k_max=30, save_path=f"./elbow_{month}.png")
+    df = pd.concat([ts, bs], ignore_index=True)
+    del ts, bs
+
+    embeddings = embed_texts_ollama(df[CLEAN_TEXT_COL].tolist(), "embeddings.dat")
+    hdbscan_cluster(df, embeddings, "hdbscan_clusters.csv", min_cluster_size=50, min_samples=5)
+
+
+    # for month in ["06", "07", "08", "09", "10", "11"]:
+    #     print("-----------------------------")
+    #     print(f"Processing month {month}...")
+    #     df_month = load_parquet(TRUTH_SOCIAL_FILE, month=month)
+
+    #     # TESTING !
+    #     df_month = df_month.sample(n=2048, random_state=42).reset_index(drop=True)
+
+    #     embeddings = embed_texts_ollama(df_month[CLEAN_TEXT_COL].tolist())
+    #     plot_elbow(embeddings, k_max=30, save_path=f"./elbow_{month}.png")
 
 
 #     # Once you pick k...
