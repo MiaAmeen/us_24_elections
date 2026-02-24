@@ -11,7 +11,7 @@ import torch
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.feature_extraction.text import CountVectorizer
 import matplotlib.pyplot as plt
-from ollama import embed
+import ollama
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -96,7 +96,7 @@ def embed_texts(
 
 def embed_texts_ollama(
     texts: List[str],
-    output_path: str,
+    output_path: str = "embeddings.dat",
     batch_size: int = 512,
     dimensions: int = EMBEDDING_DIMENSIONS,
 ):
@@ -115,7 +115,12 @@ def embed_texts_ollama(
         chunk = texts[start:end]
 
         t0 = time.perf_counter()
-        embeddings[start:end] = embed(model=EMBEDDING_MODEL, input=chunk, dimensions=dimensions)["embeddings"]
+
+        try:
+            embeddings[start:end] = ollama.embed(model=EMBEDDING_MODEL, input=chunk, dimensions=dimensions)["embeddings"]
+        except Exception as _:
+            embeddings[start:end] = np.nan
+
         batch_time = time.perf_counter() - t0
         total_batch_time += batch_time
         batch_count += 1
@@ -253,7 +258,7 @@ def hdbscan_cluster(
     df: pd.DataFrame,
     embeddings: np.ndarray,
     out_csv_path: str | Path,
-    min_cluster_size: int = 100,
+    min_cluster_size: int = 50,
     min_samples: int = 5,
     n_jobs: int = -1,
 ):
@@ -360,7 +365,7 @@ def sample_posts_for_cluster(
     df_month: pd.DataFrame,
     labels: np.ndarray,
     cluster_id: int,
-    text_col: str = TEXT,
+    text_col: str = CLEAN_TEXT_COL,
     n: int = 10,
     seed: int = 42,
 ) -> List[str]:
@@ -375,44 +380,45 @@ def sample_posts_for_cluster(
 # Example usage
 # ----------------------------
 if __name__ == "__main__":
-    ts = load_parquet(TRUTH_SOCIAL_FILE, month="05")
-    bs = load_parquet(BLUESKY_FILE, month="05")
 
-    ts.drop(columns=[CREATED_AT_COL], inplace=True)
-    bs.drop(columns=[CREATED_AT_COL], inplace=True)
+    # # Load .npz
+    # npz = np.load("embeddings_ts05.npz", allow_pickle=True)
+    # embeddings = npz["embeddings"]
+    # ids = npz["ids"]
 
-    ts["source_TS"] = 1
-    bs["source_TS"] = 0
+    # print("Shape:", embeddings.shape)
+    # print("Dtype:", embeddings.dtype)
 
-    df = pd.concat([ts, bs], ignore_index=True)
-    del ts, bs
+    # # Load original dataset
+    # df = load_parquet(TRUTH_SOCIAL_FILE)
+    # text = df.loc[df[ID_COL] == ids[0], "clean_content"].iloc[0]
 
-    embeddings = embed_texts_ollama(df[CLEAN_TEXT_COL].tolist(), "embeddings.dat")
-    hdbscan_cluster(df, embeddings, "hdbscan_clusters.csv", min_cluster_size=50, min_samples=5)
+    # test_emb = embed_texts_ollama([text])
+    # print("Original saved embedding matches test embedding?", np.allclose(embeddings[0], test_emb))
 
+    # quit(0)
 
-    # for month in ["06", "07", "08", "09", "10", "11"]:
-    #     print("-----------------------------")
-    #     print(f"Processing month {month}...")
-    #     df_month = load_parquet(TRUTH_SOCIAL_FILE, month=month)
+    for month in ["05", "06", "07", "08", "09", "10", "11"]:
+        ts = load_parquet(TRUTH_SOCIAL_FILE, month=month)
+        ts.drop(columns=[CREATED_AT_COL], inplace=True)
 
-    #     # TESTING !
-    #     df_month = df_month.sample(n=2048, random_state=42).reset_index(drop=True)
+        embeddings = embed_texts_ollama(ts[CLEAN_TEXT_COL].tolist(), f"embeddings.dat")
+        np.savez_compressed(
+            f"embeddings_ts{month}.npz",
+            embeddings=embeddings,
+            ids=ts[ID_COL].to_numpy()
+        )
 
-    #     embeddings = embed_texts_ollama(df_month[CLEAN_TEXT_COL].tolist())
-    #     plot_elbow(embeddings, k_max=30, save_path=f"./elbow_{month}.png")
+    for month in ["05", "06", "07", "08", "09", "10", "11"]:
+        bs = load_parquet(BLUESKY_FILE, month=month)
+        bs.drop(columns=[CREATED_AT_COL], inplace=True)
 
+        embeddings = embed_texts_ollama(bs[CLEAN_TEXT_COL].tolist(), f"embeddings.dat")
+        np.savez_compressed(
+            f"embeddings_bs{month}.npz",
+            embeddings=embeddings,
+            ids=bs[ID_COL].to_numpy()
+        )
 
-#     # Once you pick k...
-#     k = 12
-#     cluster_table, labels = cluster_and_export_ids_csv(
-#         df_month, embeddings, k=k, out_csv_path=OUT_CLUSTER_CSV
-#     )
+        # hdbscan_cluster(df, embeddings, f"hdbscan_clusters_{month}.csv", min_cluster_size=50, min_samples=5)
 
-#     # Top words + label prompts
-#     top = top_words_by_cluster(df_month, labels, k=k, top_n=30)
-#     for c in range(k):
-#         samples = sample_posts_for_cluster(df_month, labels, c, n=8)
-#         label_prompt = build_cluster_label_prompt(c, top[c], samples)
-#         print("=" * 80)
-#         print(label_prompt)
