@@ -259,7 +259,8 @@ def hdbscan_cluster(
     embeddings: np.ndarray,
     out_csv_path: str | Path,
     min_cluster_size: int = 50,
-    min_samples: int = 5,
+    min_samples: int = 3,
+    metric: str = "cosine",
     n_jobs: int = -1,
 ):
     import hdbscan
@@ -267,6 +268,7 @@ def hdbscan_cluster(
     clusterer = hdbscan.HDBSCAN(
         min_cluster_size=min_cluster_size,
         min_samples=min_samples,
+        metric=metric,
         core_dist_n_jobs=n_jobs,
     )
     labels = clusterer.fit_predict(embeddings)
@@ -386,11 +388,11 @@ if __name__ == "__main__":
     # embeddings = npz["embeddings"]
     # ids = npz["ids"]
 
-    # print("Shape:", embeddings.shape)
-    # print("Dtype:", embeddings.dtype)
+    # print("EMBEDDINGS -> ", "Shape:", embeddings.shape, "Dtype:", embeddings.dtype)
+    # print("IDS -> ", "Shape:", ids.shape, "Dtype:", ids.dtype)
 
     # # Load original dataset
-    # df = load_parquet(TRUTH_SOCIAL_FILE)
+    # df = load_parquet(TRUTH_SOCIAL_FILE, month="05")
     # text = df.loc[df[ID_COL] == ids[0], "clean_content"].iloc[0]
 
     # test_emb = embed_texts_ollama([text])
@@ -398,7 +400,8 @@ if __name__ == "__main__":
 
     # quit(0)
 
-    for month in ["05", "06", "07", "08", "09", "10", "11"]:
+    for month in ["06", "07", "08", "09", "10", "11"]:
+        # TRUTH SOCIAL
         ts = load_parquet(TRUTH_SOCIAL_FILE, month=month)
         ts.drop(columns=[CREATED_AT_COL], inplace=True)
 
@@ -408,8 +411,8 @@ if __name__ == "__main__":
             embeddings=embeddings,
             ids=ts[ID_COL].to_numpy()
         )
-
-    for month in ["05", "06", "07", "08", "09", "10", "11"]:
+ 
+        # BLUESKY
         bs = load_parquet(BLUESKY_FILE, month=month)
         bs.drop(columns=[CREATED_AT_COL], inplace=True)
 
